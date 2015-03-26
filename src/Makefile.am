@@ -1,5 +1,6 @@
 AM_CFLAGS = -std=c99 $(GTK_CFLAGS)
-AM_LDFLAGS = -ljack $(GTK_LIBS)
+
+jackpunkconsole_LDADD = -ljack $(GTK_LIBS)
+jackpunkconsole_SOURCES = main.c
 
 bin_PROGRAMS = jackpunkconsole
-jackpunkconsole_SOURCES = main.c

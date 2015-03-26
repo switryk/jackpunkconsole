@@ -1,0 +1,11 @@
+Makefile
+autom4te.cache
+config.h
+config.log
+config.status
+src/.deps
+src/Makefile
+src/jackpunkconsole
+src/*.o
+stamp-h1
+
