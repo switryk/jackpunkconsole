@@ -152,32 +152,29 @@ static void jack_shutdown(void *arg) {
 
 #ifdef HAVE_GTK
 
-#define CLAMPVAL(_val,_a,_b) do {  \
-    if (_val < _a) _val = _a;      \
-    else if (_val > _b) _val = _b; \
-} while (0)
+#define CLAMPVAL(_val,_a,_b) \
+    ((_val) < (_a) ? (_a) : ((_val) > (_b) ? (_b) : (_val)))
 
-static gboolean pot1change (GtkRange     *range,
-                            GtkScrollType scroll,
-                            gdouble       value,
-                            gpointer      user_data) {
-    int val = value;
-    CLAMPVAL(val, 0, 470000);
+static struct pot_widgets {
+    GtkWidget *pot1;
+    GtkWidget *pot2;
+    GtkWidget *twodslider;
+    GtkWidget *potgain;
+} pw;
 
-    update_pot_values(val, pot2);
-
-    return FALSE;
-}
-
-static gboolean pot2change (GtkRange     *range,
-                            GtkScrollType scroll,
-                            gdouble       value,
-                            gpointer      user_data) {
-    int val = value;
-    CLAMPVAL(val, 0, 470000);
-
-    update_pot_values(pot1, val);
-
+static gboolean potchange (GtkRange *range,
+                           GtkScrollType scroll,
+                           gdouble value,
+                           gpointer user_data) {
+    struct pot_widgets *pw = (struct pot_widgets *)user_data;
+    
+    if ((GtkWidget *)range == pw->pot1)
+        update_pot_values(CLAMPVAL(value, 0, 470000), pot2);
+    else
+        update_pot_values(pot1, CLAMPVAL(value, 0, 470000));
+    
+    gtk_widget_queue_draw(pw->twodslider);
+    
     return FALSE;
 }
 
@@ -185,10 +182,90 @@ static gboolean gainchange (GtkRange     *range,
                             GtkScrollType scroll,
                             gdouble       value,
                             gpointer      user_data) {
-    CLAMPVAL(value, 0.0, 1.0);
+    gain = CLAMPVAL(value, 0.0, 1.0);
 
-    gain = value;
+    return FALSE;
+}
 
+static gboolean draw_callback (GtkWidget *widget,
+                               cairo_t *cr,
+                               gpointer data) {
+    guint width, height;
+    GdkRGBA color;
+
+    width = gtk_widget_get_allocated_width (widget);
+    height = gtk_widget_get_allocated_height (widget);
+    
+    cairo_arc (cr,
+               ((double)pot1/470000.0)*width,
+               height-((double)pot2/470000.0)*height,
+               5,
+               0, 2 * G_PI);
+
+    gtk_style_context_get_color (gtk_widget_get_style_context (widget),
+                                 0,
+                                 &color);
+    gdk_cairo_set_source_rgba (cr, &color);
+
+    cairo_fill (cr);
+
+    return FALSE;
+}
+
+static gboolean mouse_button_event (GtkWidget *widget,
+                                    GdkEvent  *event,
+                                    gpointer   user_data) {
+    struct pot_widgets *pw = (struct pot_widgets *)user_data;
+    GdkEventButton *e = (GdkEventButton *)event;
+    guint width, height;
+
+    width = gtk_widget_get_allocated_width (widget);
+    height = gtk_widget_get_allocated_height (widget);
+    
+    update_pot_values(CLAMPVAL(e->x/width,0.0,1.0) * 470000.0,
+                      (1.0 - CLAMPVAL(e->y/height,0.0,1.0))*470000.0);
+    
+    gtk_range_set_value(GTK_RANGE (pw->pot1), pot1);
+    gtk_range_set_value(GTK_RANGE (pw->pot2), pot2);
+    
+    gtk_widget_queue_draw(widget);
+    
+    return FALSE;
+}
+
+static gboolean mouse_motion_event (GtkWidget *widget,
+                                    GdkEvent  *event,
+                                    gpointer   user_data) {
+    struct pot_widgets *pw = (struct pot_widgets *)user_data;
+    GdkEventMotion *e = (GdkEventMotion *)event;
+    int x, y;
+    guint width, height;
+    GdkModifierType state;
+    
+    width = gtk_widget_get_allocated_width (widget);
+    height = gtk_widget_get_allocated_height (widget);
+    
+    if (e->is_hint) {
+        return FALSE;
+    } else {
+        x = e->x;
+        y = e->y;
+        state = e->state;
+    }
+    
+    if (state & GDK_BUTTON1_MASK) {
+        printf("%f, %f\n", CLAMPVAL((double)x/width,0.0,1.0) * 470000.0,
+                          (1.0 - CLAMPVAL((double)y/height,0.0,1.0))
+                                  *470000.0);
+        update_pot_values(CLAMPVAL((double)x/width,0.0,1.0) * 470000.0,
+                          (1.0 - CLAMPVAL((double)y/height,0.0,1.0))
+                                  *470000.0);
+        gtk_range_set_value(GTK_RANGE (pw->pot1), pot1);
+        gtk_range_set_value(GTK_RANGE (pw->pot2), pot2);
+        gtk_widget_queue_draw(widget);
+    }
+  
+    
     return FALSE;
 }
 
@@ -199,6 +276,7 @@ static void activate (GtkApplication *app, gpointer user_data) {
     GtkWidget *hbox;
     GtkWidget *pot1_widget;
     GtkWidget *pot2_widget;
+    GtkWidget *twodslider;
     GtkWidget *potgain;
     GtkWidget *labelpot1;
     GtkWidget *labelpot2;
@@ -211,12 +289,18 @@ static void activate (GtkApplication *app, gpointer user_data) {
     hbox = gtk_box_new (GTK_ORIENTATION_VERTICAL, 10);
     gtk_container_add (GTK_CONTAINER (window), hbox);
 
+    twodslider = gtk_drawing_area_new ();
+    gtk_widget_set_size_request (twodslider, 300, 300);
+    gtk_widget_add_events (twodslider,
+                             GDK_BUTTON_PRESS_MASK
+                           | GDK_POINTER_MOTION_MASK);
+
     pot1_widget = gtk_scale_new_with_range (GTK_ORIENTATION_HORIZONTAL,
                                             0.0,
                                             470000,
                                             10.0);
     gtk_range_set_value(GTK_RANGE (pot1_widget), pot1);
-
+    
     pot2_widget = gtk_scale_new_with_range (GTK_ORIENTATION_HORIZONTAL,
                                             0.0,
                                             470000,
@@ -233,6 +317,7 @@ static void activate (GtkApplication *app, gpointer user_data) {
     labelpot2 = gtk_label_new ("Monostable potentiometer");
     labelpotgain = gtk_label_new ("Gain");
 
+    gtk_container_add (GTK_CONTAINER (hbox), twodslider);
     gtk_container_add (GTK_CONTAINER (hbox), labelpot1);
     gtk_container_add (GTK_CONTAINER (hbox), pot1_widget);
     gtk_container_add (GTK_CONTAINER (hbox), labelpot2);
@@ -240,9 +325,25 @@ static void activate (GtkApplication *app, gpointer user_data) {
     gtk_container_add (GTK_CONTAINER (hbox), labelpotgain);
     gtk_container_add (GTK_CONTAINER (hbox), potgain);
 
-    g_signal_connect (pot1_widget, "change-value", G_CALLBACK (pot1change), NULL);
-    g_signal_connect (pot2_widget, "change-value", G_CALLBACK (pot2change), NULL);
-    g_signal_connect (potgain, "change-value", G_CALLBACK (gainchange), NULL);
+    pw.pot1 = pot1_widget;
+    pw.pot2 = pot2_widget;
+    pw.potgain = potgain;
+    pw.twodslider = twodslider;
+
+    g_signal_connect (G_OBJECT (twodslider), "draw",
+                      G_CALLBACK (draw_callback), (gpointer)&pw);
+    g_signal_connect (G_OBJECT (twodslider), "button-press-event",
+                      G_CALLBACK (mouse_button_event), (gpointer)&pw);
+    g_signal_connect (G_OBJECT (twodslider), "button-release-event",
+                      G_CALLBACK (mouse_button_event), (gpointer)&pw);
+    g_signal_connect (G_OBJECT (twodslider), "motion_notify_event",
+                      G_CALLBACK (mouse_motion_event), (gpointer)&pw);
+    g_signal_connect (pot1_widget, "change-value",
+                      G_CALLBACK (potchange), (gpointer)&pw);
+    g_signal_connect (pot2_widget, "change-value",
+                      G_CALLBACK (potchange), (gpointer)&pw);
+    g_signal_connect (potgain, "change-value",
+                      G_CALLBACK (gainchange), NULL);
 
     gtk_widget_show_all (window);
 }
