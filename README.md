@@ -50,11 +50,11 @@ change accordingly).
 
 ### Midi
 
-TODO
+TODO (needs to be improved...)
 
 ## Sample
 
-TODO
++ [Raw sound](http://witryk.be/jpc-sample01.ogg)
 
 ## TODO
 
