@@ -182,7 +182,22 @@ static int process (jack_nframes_t nframes, void *arg) {
                                        midi_notes[note].pot2);
             } else if ( ((*(in_event.buffer)) & 0xf0) == 0xe0) {
                 /* pitch bend */
-                // TODO: implement pitch bend
+                int pitch = (in_event.buffer[1] & 0x7f)
+                         | ((in_event.buffer[2] & 0x7f) << 7);
+                int note;
+
+                /* normalize */
+                if (pitch >= 0x2000)
+                    pitch -= 0x2000;
+                else
+                    pitch = -(0x2000-pitch);
+
+                GET_NOTE(note);
+                double center = midi_notes[note].pot2;
+                if (pitch >= 0)
+                    update_pot_values(pot1, center - (double)pitch/0x2000 * center);
+                else
+                    update_pot_values(pot1, center - (double)pitch/0x2000 * (470000 - center));
             }
 
             ++event_index;
