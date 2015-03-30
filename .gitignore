@@ -1,8 +1,16 @@
-Makefile
+aclocal.m4
 autom4te.cache
+compile
+configure
 config.h
+config.h.in
 config.log
 config.status
+depcomp
+install-sh
+Makefile
+Makefile.in
+missing
 src/.deps
 src/Makefile
 src/jackpunkconsole
