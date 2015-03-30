@@ -37,6 +37,8 @@
 #include <jack/jack.h>
 #include <jack/midiport.h>
 
+#include "midi_notes.h"
+
 static jack_port_t *input_port;
 static jack_port_t *output_port;
 
@@ -56,11 +58,76 @@ static int output = 1;
 
 static float gain = 1.0f;
 
+static unsigned long midi_notes_played[] = { 0, 0, 0, 0 };
+
 #ifndef HAVE_GTK
 static int running = 1;
+#else
+static int mouse_pressed = 0;
 #endif
 
-static void update_pot_values(int p1, int p2) {
+#define NOTE_ON(_note) do {                          \
+    if (_note < 0);                                  \
+    else if (_note < 32)                             \
+        midi_notes_played[0] |= 1 << (_note);        \
+    else if (_note < 64)                             \
+        midi_notes_played[1] |= 1 << ((_note) - 32); \
+    else if (_note < 96)                             \
+        midi_notes_played[2] |= 1 << ((_note) - 64); \
+    else if (_note < 128)                            \
+        midi_notes_played[3] |= 1 << ((_note) - 96); \
+} while (0)
+
+#define NOTE_OFF(_note) do {                            \
+    if (_note < 0);                                     \
+    else if (_note < 32)                                \
+        midi_notes_played[0] &= ~(1 << (_note));        \
+    else if (_note < 64)                                \
+        midi_notes_played[1] &= ~(1 << ((_note) - 32)); \
+    else if (_note < 96)                                \
+        midi_notes_played[2] &= ~(1 << ((_note) - 64)); \
+    else if (_note < 128)                               \
+        midi_notes_played[3] &= ~(1 << ((_note) - 96)); \
+} while (0)
+
+#define GET_NOTE_AUX(_note) do {   \
+    while (! (ulnote & 1)) {       \
+        ulnote >>= 1;              \
+        _note++;                   \
+    }                              \
+} while(0)
+
+#define GET_NOTE(_note) do {                        \
+    unsigned long ulnote;                           \
+    if        (midi_notes_played[0]) {              \
+        ulnote = midi_notes_played[0];              \
+        _note = 0;                                  \
+        GET_NOTE_AUX(_note);                        \
+    } else if (midi_notes_played[1]) {              \
+        ulnote = midi_notes_played[1];              \
+        _note = 32;                                 \
+        GET_NOTE_AUX(_note);                        \
+    } else if (midi_notes_played[2]) {              \
+        ulnote = midi_notes_played[2];              \
+        _note = 64;                                 \
+        GET_NOTE_AUX(_note);                        \
+    } else if (midi_notes_played[3]) {              \
+        ulnote = midi_notes_played[3];              \
+        _note = 96;                                 \
+        GET_NOTE_AUX(_note);                        \
+    } else {                                        \
+        _note = -1;                                 \
+    }                                               \
+} while (0)
+
+#define IS_NOTE_ON() (midi_notes_played[0] \
+    || midi_notes_played[1]                \
+    || midi_notes_played[2]                \
+    || midi_notes_played[3])
+
+#define IS_NOTE_OFF() (! IS_NOTE_ON())
+
+static void update_pot_values (int p1, int p2) {
     high_time_astable = 0.693*((float)p1 + 1000.0)*.01E-6*current_srate;
     low_time_astable = 0.693*((float)p1)*.01E-6*current_srate;
     high_time_monostable = 0.693*((float)p2)*.1E-6*current_srate;
@@ -69,53 +136,58 @@ static void update_pot_values(int p1, int p2) {
     pot2 = p2;
 }
 
-static void update_srate(jack_nframes_t srate) {
+static void update_srate (jack_nframes_t srate) {
     float slope = current_srate == 0 ? 1.f : (float)srate/current_srate;
 
     current_srate = srate;
 
-    update_pot_values(pot1, pot2);
+    update_pot_values (pot1, pot2);
 
     run_time_astable *= slope;
     run_time_monostable *= slope;
 }
 
-static int process(jack_nframes_t nframes, void *arg) {
-    void* port_buf = jack_port_get_buffer(input_port, nframes);
+static int process (jack_nframes_t nframes, void *arg) {
+    void* port_buf = jack_port_get_buffer (input_port, nframes);
 
     jack_default_audio_sample_t *out = (jack_default_audio_sample_t *)
         jack_port_get_buffer (output_port, nframes);
+
     jack_midi_event_t in_event;
     jack_nframes_t event_index = 0;
-    jack_nframes_t event_count = jack_midi_get_event_count(port_buf);
-    jack_midi_event_get(&in_event, port_buf, 0);
-    for (jack_nframes_t i=0; i<nframes; i++) {
+    jack_nframes_t event_count = jack_midi_get_event_count (port_buf);
+
+    jack_midi_event_get (&in_event, port_buf, 0);
+
+    for (jack_nframes_t i = 0; i < nframes; ++i) {
         if ((in_event.time == i) && (event_index < event_count)) {
             if ( ((*(in_event.buffer) & 0xf0)) == 0x90 ) {
                 /* note on */
-                unsigned char note = *(in_event.buffer + 1);
+                int note = *(in_event.buffer + 1);
 
-                update_pot_values(3700 * (127-note), pot2);
+                NOTE_ON(note);
 
-                printf("update_pot_values %d %d\n", pot1, pot2);
+                update_pot_values (midi_notes[note].pot1,
+                                   midi_notes[note].pot2);
             } else if ( ((*(in_event.buffer)) & 0xf0) == 0x80 ) {
                 /* note off */
+                int note = *(in_event.buffer + 1);
+
+                NOTE_OFF(note);
+
+                /* any note still pressed? */
+                GET_NOTE(note);
+                if (-1 != note)
+                    update_pot_values (midi_notes[note].pot1,
+                                       midi_notes[note].pot2);
             } else if ( ((*(in_event.buffer)) & 0xf0) == 0xe0) {
                 /* pitch bend */
-                int pitch =  (in_event.buffer[1] & 0x7f)
-                          | ((in_event.buffer[2] & 0x7f) << 7);
-
-                /* take absolute pitch */
-                if (pitch >= 0x2000) {
-                    pitch -= 0x2000;
-                }
-                pitch = 0x2000 - pitch;
-
-                update_pot_values(pot1, pitch * 58);
+                // TODO: implement pitch bend
             }
-            event_index++;
-            if(event_index < event_count)
-                jack_midi_event_get(&in_event, port_buf, event_index);
+
+            ++event_index;
+            if (event_index < event_count)
+                jack_midi_event_get (&in_event, port_buf, event_index);
         }
 
         if (run_time_astable >= high_time_astable + low_time_astable)
@@ -132,19 +204,26 @@ static int process(jack_nframes_t nframes, void *arg) {
         run_time_astable ++;
         run_time_monostable ++;
 
-        out[i] = (output ? 1.f : -1.f) * gain;
+        out[i] = (
+#ifdef HAVE_GTK
+                  mouse_pressed
+#else
+                  0
+#endif
+                                 || IS_NOTE_ON())
+            ? (output ? 1.f : -1.f) * gain
+            : 0.0f;
     }
     return 0;
 }
 
-static int srate(jack_nframes_t nframes, void *arg) {
-    printf("new sample rate: %u\n", nframes);
-    update_srate(nframes);
+static int srate (jack_nframes_t nframes, void *arg) {
+    update_srate (nframes);
 
     return 0;
 }
 
-static void jack_shutdown(void *arg) {
+static void jack_shutdown (void *arg) {
 #ifndef HAVE_GTK
     running = 0;
 #endif
@@ -167,14 +246,14 @@ static gboolean potchange (GtkRange *range,
                            gdouble value,
                            gpointer user_data) {
     struct pot_widgets *pw = (struct pot_widgets *)user_data;
-    
+
     if ((GtkWidget *)range == pw->pot1)
-        update_pot_values(CLAMPVAL(value, 0, 470000), pot2);
+        update_pot_values (CLAMPVAL(value, 0, 470000), pot2);
     else
-        update_pot_values(pot1, CLAMPVAL(value, 0, 470000));
-    
-    gtk_widget_queue_draw(pw->twodslider);
-    
+        update_pot_values (pot1, CLAMPVAL(value, 0, 470000));
+
+    gtk_widget_queue_draw (pw->twodslider);
+
     return FALSE;
 }
 
@@ -195,7 +274,7 @@ static gboolean draw_callback (GtkWidget *widget,
 
     width = gtk_widget_get_allocated_width (widget);
     height = gtk_widget_get_allocated_height (widget);
-    
+
     cairo_arc (cr,
                ((double)pot1/470000.0)*width,
                height-((double)pot2/470000.0)*height,
@@ -217,19 +296,29 @@ static gboolean mouse_button_event (GtkWidget *widget,
                                     gpointer   user_data) {
     struct pot_widgets *pw = (struct pot_widgets *)user_data;
     GdkEventButton *e = (GdkEventButton *)event;
-    guint width, height;
 
-    width = gtk_widget_get_allocated_width (widget);
-    height = gtk_widget_get_allocated_height (widget);
-    
-    update_pot_values(CLAMPVAL(e->x/width,0.0,1.0) * 470000.0,
-                      (1.0 - CLAMPVAL(e->y/height,0.0,1.0))*470000.0);
-    
-    gtk_range_set_value(GTK_RANGE (pw->pot1), pot1);
-    gtk_range_set_value(GTK_RANGE (pw->pot2), pot2);
-    
-    gtk_widget_queue_draw(widget);
-    
+    if (pw->twodslider == widget) {
+        guint width, height;
+
+        width = gtk_widget_get_allocated_width (widget);
+        height = gtk_widget_get_allocated_height (widget);
+
+        update_pot_values (CLAMPVAL(e->x/width,0.0,1.0) * 470000.0,
+                           (1.0 - CLAMPVAL(e->y/height,0.0,1.0))*470000.0);
+
+
+        gtk_range_set_value (GTK_RANGE (pw->pot1), pot1);
+        gtk_range_set_value (GTK_RANGE (pw->pot2), pot2);
+
+        gtk_widget_queue_draw (widget);
+    }
+
+    if (e->type == GDK_BUTTON_PRESS) {
+        mouse_pressed = 1;
+    } else if (e->type == GDK_BUTTON_RELEASE) {
+        mouse_pressed = 0;
+    }
+
     return FALSE;
 }
 
@@ -241,10 +330,10 @@ static gboolean mouse_motion_event (GtkWidget *widget,
     int x, y;
     guint width, height;
     GdkModifierType state;
-    
+
     width = gtk_widget_get_allocated_width (widget);
     height = gtk_widget_get_allocated_height (widget);
-    
+
     if (e->is_hint) {
         return FALSE;
     } else {
@@ -252,20 +341,16 @@ static gboolean mouse_motion_event (GtkWidget *widget,
         y = e->y;
         state = e->state;
     }
-    
+
     if (state & GDK_BUTTON1_MASK) {
-        printf("%f, %f\n", CLAMPVAL((double)x/width,0.0,1.0) * 470000.0,
-                          (1.0 - CLAMPVAL((double)y/height,0.0,1.0))
-                                  *470000.0);
-        update_pot_values(CLAMPVAL((double)x/width,0.0,1.0) * 470000.0,
-                          (1.0 - CLAMPVAL((double)y/height,0.0,1.0))
-                                  *470000.0);
-        gtk_range_set_value(GTK_RANGE (pw->pot1), pot1);
-        gtk_range_set_value(GTK_RANGE (pw->pot2), pot2);
-        gtk_widget_queue_draw(widget);
+        update_pot_values (CLAMPVAL((double)x/width,0.0,1.0) * 470000.0,
+                           (1.0 - CLAMPVAL((double)y/height,0.0,1.0))
+                                   *470000.0);
+        gtk_range_set_value (GTK_RANGE (pw->pot1), pot1);
+        gtk_range_set_value (GTK_RANGE (pw->pot2), pot2);
+        gtk_widget_queue_draw (widget);
     }
-  
-    
+
     return FALSE;
 }
 
@@ -293,25 +378,32 @@ static void activate (GtkApplication *app, gpointer user_data) {
     gtk_widget_set_size_request (twodslider, 300, 300);
     gtk_widget_add_events (twodslider,
                              GDK_BUTTON_PRESS_MASK
+                           | GDK_BUTTON_RELEASE_MASK
                            | GDK_POINTER_MOTION_MASK);
 
     pot1_widget = gtk_scale_new_with_range (GTK_ORIENTATION_HORIZONTAL,
                                             0.0,
                                             470000,
                                             10.0);
-    gtk_range_set_value(GTK_RANGE (pot1_widget), pot1);
-    
+    gtk_range_set_value (GTK_RANGE (pot1_widget), pot1);
+    gtk_widget_add_events (pot1_widget,
+                             GDK_BUTTON_PRESS_MASK
+                           | GDK_BUTTON_RELEASE_MASK);
+
     pot2_widget = gtk_scale_new_with_range (GTK_ORIENTATION_HORIZONTAL,
                                             0.0,
                                             470000,
                                             10.0);
-    gtk_range_set_value(GTK_RANGE (pot2_widget), pot2);
+    gtk_range_set_value (GTK_RANGE (pot2_widget), pot2);
+    gtk_widget_add_events (pot2_widget,
+                             GDK_BUTTON_PRESS_MASK
+                           | GDK_BUTTON_RELEASE_MASK);
 
     potgain = gtk_scale_new_with_range (GTK_ORIENTATION_HORIZONTAL,
                                         0.0,
                                         1.0,
                                         0.05);
-    gtk_range_set_value(GTK_RANGE (potgain), gain);
+    gtk_range_set_value (GTK_RANGE (potgain), gain);
 
     labelpot1 = gtk_label_new ("Astable potentiometer");
     labelpot2 = gtk_label_new ("Monostable potentiometer");
@@ -338,10 +430,21 @@ static void activate (GtkApplication *app, gpointer user_data) {
                       G_CALLBACK (mouse_button_event), (gpointer)&pw);
     g_signal_connect (G_OBJECT (twodslider), "motion_notify_event",
                       G_CALLBACK (mouse_motion_event), (gpointer)&pw);
+
     g_signal_connect (pot1_widget, "change-value",
                       G_CALLBACK (potchange), (gpointer)&pw);
+    g_signal_connect (G_OBJECT (pot1_widget), "button-press-event",
+                      G_CALLBACK (mouse_button_event), (gpointer)&pw);
+    g_signal_connect (G_OBJECT (pot1_widget), "button-release-event",
+                      G_CALLBACK (mouse_button_event), (gpointer)&pw);
+
     g_signal_connect (pot2_widget, "change-value",
                       G_CALLBACK (potchange), (gpointer)&pw);
+    g_signal_connect (G_OBJECT (pot2_widget), "button-press-event",
+                      G_CALLBACK (mouse_button_event), (gpointer)&pw);
+    g_signal_connect (G_OBJECT (pot2_widget), "button-release-event",
+                      G_CALLBACK (mouse_button_event), (gpointer)&pw);
+
     g_signal_connect (potgain, "change-value",
                       G_CALLBACK (gainchange), NULL);
 
@@ -350,11 +453,11 @@ static void activate (GtkApplication *app, gpointer user_data) {
 #endif
 
 #ifndef HAVE_GTK
-static void sig_handler(int signum) {
+static void sig_handler (int signum) {
     running = 0;
 }
 
-static void signal_setup(void) {
+static void signal_setup (void) {
     const int signals[] = {
         SIGHUP,
         SIGINT,
@@ -365,33 +468,33 @@ static void signal_setup(void) {
     };
     sigset_t waitset;
 
-    sigemptyset(&waitset);
+    sigemptyset (&waitset);
     for (int i = 0; 0 != signals[i]; i++) {
         struct sigaction sa;
 
-        sigaddset(&waitset, signals[i]);
+        sigaddset (&waitset, signals[i]);
 
         errno = 0;
         sa.sa_flags = 0;
         sa.sa_handler = sig_handler;
-        sigaction(signals[i], &sa, NULL);
+        sigaction (signals[i], &sa, NULL);
     }
-    pthread_sigmask(SIG_UNBLOCK, &waitset, NULL);
+    pthread_sigmask (SIG_UNBLOCK, &waitset, NULL);
 }
 #endif
 
-int main(int argc, char **argv) {
-    printf(PACKAGE_STRING"\n");
-    
+int main (int argc, char **argv) {
+    printf (PACKAGE_STRING"\n");
+
     jack_client_t *client;
     if ((client = jack_client_open (PACKAGE_NAME,
                                     JackNullOption,
                                     NULL)) == 0) {
-        fprintf(stderr, "Jack error: server not running?\n");
+        fprintf (stderr, "Jack error: server not running?\n");
         return 1;
     }
 
-    update_srate(jack_get_sample_rate (client));
+    update_srate (jack_get_sample_rate (client));
 
     jack_set_process_callback (client, process, 0);
     jack_set_sample_rate_callback (client, srate, 0);
@@ -403,7 +506,7 @@ int main(int argc, char **argv) {
             JACK_DEFAULT_AUDIO_TYPE, JackPortIsOutput, 0);
 
     if (jack_activate (client)) {
-        fprintf(stderr, "JAck error: cannot activate client");
+        fprintf (stderr, "Jack error: cannot activate client");
         return 1;
     }
 
@@ -415,14 +518,14 @@ int main(int argc, char **argv) {
     g_application_run (G_APPLICATION (app), argc, argv);
     g_object_unref (app);
 #else
-    signal_setup();
+    signal_setup ();
 
-    while (running) pause();
+    while (running) pause ();
 #endif
 
-    jack_client_close(client);
+    jack_client_close (client);
 
-    fprintf(stdout, "Bye.\n");
+    fprintf (stdout, "Bye.\n");
 
     return 0;
 }
