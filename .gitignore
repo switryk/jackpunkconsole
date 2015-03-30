@@ -8,6 +8,7 @@ config.log
 config.status
 depcomp
 install-sh
+jackpunkconsole-*.tar.gz
 Makefile
 Makefile.in
 missing
