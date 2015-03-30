@@ -157,10 +157,11 @@ static int process (jack_nframes_t nframes, void *arg) {
     jack_nframes_t event_index = 0;
     jack_nframes_t event_count = jack_midi_get_event_count (port_buf);
 
-    jack_midi_event_get (&in_event, port_buf, 0);
+    if (event_count > 0)
+        jack_midi_event_get (&in_event, port_buf, 0);
 
     for (jack_nframes_t i = 0; i < nframes; ++i) {
-        if ((in_event.time == i) && (event_index < event_count)) {
+        while ((in_event.time == i) && (event_index < event_count)) {
             if ( ((*(in_event.buffer) & 0xf0)) == 0x90 ) {
                 /* note on */
                 int note = *(in_event.buffer + 1);
