@@ -39,6 +39,8 @@
 
 #include "midi_notes.h"
 
+static const int MAX_POT_VALUE = 470000;
+
 static jack_port_t *input_port;
 static jack_port_t *output_port;
 
@@ -56,9 +58,11 @@ static int run_time_monostable = 0;
 
 static int output = 1;
 
-static float gain = 1.0f;
+static float gain = .5f;
 
 static unsigned long midi_notes_played[] = { 0, 0, 0, 0 };
+static int current_midi_note_played = -1;
+static int current_pitch_bend = 0;
 
 #ifndef HAVE_GTK
 static int running = 1;
@@ -162,14 +166,14 @@ static int process (jack_nframes_t nframes, void *arg) {
 
     for (jack_nframes_t i = 0; i < nframes; ++i) {
         while ((in_event.time == i) && (event_index < event_count)) {
+            int previous_note_played = current_midi_note_played;
+            int previous_pitch_bend = current_pitch_bend;
             if ( ((*(in_event.buffer) & 0xf0)) == 0x90 ) {
                 /* note on */
                 int note = *(in_event.buffer + 1);
 
                 NOTE_ON(note);
-
-                update_pot_values (midi_notes[note].pot1,
-                                   midi_notes[note].pot2);
+                current_midi_note_played = note;
             } else if ( ((*(in_event.buffer)) & 0xf0) == 0x80 ) {
                 /* note off */
                 int note = *(in_event.buffer + 1);
@@ -178,9 +182,7 @@ static int process (jack_nframes_t nframes, void *arg) {
 
                 /* any note still pressed? */
                 GET_NOTE(note);
-                if (-1 != note)
-                    update_pot_values (midi_notes[note].pot1,
-                                       midi_notes[note].pot2);
+                current_midi_note_played = note;
             } else if ( ((*(in_event.buffer)) & 0xf0) == 0xe0) {
                 /* pitch bend */
                 int pitch = (in_event.buffer[1] & 0x7f)
@@ -193,12 +195,23 @@ static int process (jack_nframes_t nframes, void *arg) {
                 else
                     pitch = -(0x2000-pitch);
 
-                GET_NOTE(note);
-                double center = midi_notes[note].pot2;
-                if (pitch >= 0)
-                    update_pot_values(pot1, center - (double)pitch/0x2000 * center);
+                current_pitch_bend = pitch;
+            }
+
+            if (   current_midi_note_played != -1
+                && (current_midi_note_played != previous_note_played
+                    || current_pitch_bend != previous_pitch_bend)) {
+                double center
+                    = midi_notes[current_midi_note_played].pot2;
+                
+                int p1 = midi_notes[current_midi_note_played].pot1;
+                if (current_pitch_bend >= 0)
+                    update_pot_values(p1, center
+                        - (double)current_pitch_bend/0x2000 * center);
                 else
-                    update_pot_values(pot1, center - (double)pitch/0x2000 * (470000 - center));
+                    update_pot_values(p1, center
+                        - (double)current_pitch_bend/0x2000
+                            * (MAX_POT_VALUE - center));
             }
 
             ++event_index;
@@ -264,9 +277,9 @@ static gboolean potchange (GtkRange *range,
     struct pot_widgets *pw = (struct pot_widgets *)user_data;
 
     if ((GtkWidget *)range == pw->pot1)
-        update_pot_values (CLAMPVAL(value, 0, 470000), pot2);
+        update_pot_values (CLAMPVAL(value, 0, MAX_POT_VALUE), pot2);
     else
-        update_pot_values (pot1, CLAMPVAL(value, 0, 470000));
+        update_pot_values (pot1, CLAMPVAL(value, 0, MAX_POT_VALUE));
 
     gtk_widget_queue_draw (pw->twodslider);
 
@@ -292,8 +305,8 @@ static gboolean draw_callback (GtkWidget *widget,
     height = gtk_widget_get_allocated_height (widget);
 
     cairo_arc (cr,
-               ((double)pot1/470000.0)*width,
-               height-((double)pot2/470000.0)*height,
+               ((double)pot1/MAX_POT_VALUE)*width,
+               height-((double)pot2/MAX_POT_VALUE)*height,
                5,
                0, 2 * G_PI);
 
@@ -319,8 +332,8 @@ static gboolean mouse_button_event (GtkWidget *widget,
         width = gtk_widget_get_allocated_width (widget);
         height = gtk_widget_get_allocated_height (widget);
 
-        update_pot_values (CLAMPVAL(e->x/width,0.0,1.0) * 470000.0,
-                           (1.0 - CLAMPVAL(e->y/height,0.0,1.0))*470000.0);
+        update_pot_values (CLAMPVAL(e->x/width,0.0,1.0) * MAX_POT_VALUE,
+                           (1.0 - CLAMPVAL(e->y/height,0.0,1.0))*MAX_POT_VALUE);
 
 
         gtk_range_set_value (GTK_RANGE (pw->pot1), pot1);
@@ -359,9 +372,9 @@ static gboolean mouse_motion_event (GtkWidget *widget,
     }
 
     if (state & GDK_BUTTON1_MASK) {
-        update_pot_values (CLAMPVAL((double)x/width,0.0,1.0) * 470000.0,
+        update_pot_values (CLAMPVAL((double)x/width,0.0,1.0) * MAX_POT_VALUE,
                            (1.0 - CLAMPVAL((double)y/height,0.0,1.0))
-                                   *470000.0);
+                                   * MAX_POT_VALUE);
         gtk_range_set_value (GTK_RANGE (pw->pot1), pot1);
         gtk_range_set_value (GTK_RANGE (pw->pot2), pot2);
         gtk_widget_queue_draw (widget);
@@ -399,7 +412,7 @@ static void activate (GtkApplication *app, gpointer user_data) {
 
     pot1_widget = gtk_scale_new_with_range (GTK_ORIENTATION_HORIZONTAL,
                                             0.0,
-                                            470000,
+                                            MAX_POT_VALUE,
                                             10.0);
     gtk_range_set_value (GTK_RANGE (pot1_widget), pot1);
     gtk_widget_add_events (pot1_widget,
@@ -408,7 +421,7 @@ static void activate (GtkApplication *app, gpointer user_data) {
 
     pot2_widget = gtk_scale_new_with_range (GTK_ORIENTATION_HORIZONTAL,
                                             0.0,
-                                            470000,
+                                            MAX_POT_VALUE,
                                             10.0);
     gtk_range_set_value (GTK_RANGE (pot2_widget), pot2);
     gtk_widget_add_events (pot2_widget,
