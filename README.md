@@ -76,5 +76,5 @@ command: `a2jmidid -e`.
 ## Sample
 
 + [Raw sound using the GUI](http://witryk.be/jpc-sample01.ogg)
-+ Raw sound using a midi keyboard (TODO)
++ [Raw sound using a midi keyboard](http://witryk.be/jpc-sample02.ogg). This one is a mix of two sessions as jackpunkconsole is not polyphonic.
 + Effect processed sound (TODO)
