@@ -404,6 +404,7 @@ static void activate (GtkApplication *app, gpointer user_data) {
     gtk_container_add (GTK_CONTAINER (window), hbox);
 
     twodslider = gtk_drawing_area_new ();
+    g_object_set(twodslider, "expand", TRUE, NULL);
     gtk_widget_set_size_request (twodslider, 300, 300);
     gtk_widget_add_events (twodslider,
                              GDK_BUTTON_PRESS_MASK
